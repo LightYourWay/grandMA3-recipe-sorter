@@ -166,7 +166,7 @@ test('"all cues" skips the internal OffCue and CueZero', function()
 		local internal = seq.children[i].children[1]
 		same(MA.column(internal, extra), { 'internal-b', 'internal-a' }, seq.children[i].name)
 	end
-	check(MA.log.messages[1]:find('/ 1 Cues', 1, true), MA.log.messages[1])
+	check(MA.log.messages[1]:find('/ 1 Cue ', 1, true), MA.log.messages[1])
 end)
 
 test('addresses long cue numbers and higher parts exactly', function()
@@ -198,7 +198,8 @@ test('already sorted parts are not rewritten', function()
 	MA.answer('1', '', 'group')
 	runPlugin()
 	check(MA.log.moves == 0, 'expected no writes, got ' .. MA.log.moves .. ' moves')
-	check(MA.log.messages[1]:find('0 Parts umsortiert', 1, true), MA.log.messages[1])
+	check(MA.log.messages[1]:find('Alles war bereits sortiert, nichts geändert.', 1, true), MA.log.messages[1])
+	check(MA.log.undoOpened == 0, 'no undo step when nothing changes')
 end)
 
 test('cancel changes nothing', function()
@@ -263,7 +264,7 @@ test('report lists counts', function()
 	runPlugin()
 	local message = MA.log.messages[1]
 	check(message:find('5 Recipes in 3 Parts / 2 Cues', 1, true), message)
-	check(message:find('1 Parts umsortiert', 1, true), message)
+	check(message:find('Reihenfolge in 1 von 3 Parts geändert.', 1, true), message)
 	check(not message:find('WARNUNG', 1, true) and not message:find('FEHLER', 1, true), message)
 end)
 
@@ -290,7 +291,7 @@ test('delete empty: removes lines without group and preset', function()
 	MA.answer('1', '', 'group', { deleteEmpty = true })
 	runPlugin()
 	same(MA.column(part(seq, 1), tag), { 'a', 'b', 'p' })
-	check(message():find('1 leere Recipes gelöscht', 1, true), message())
+	check(message():find('1 leere Recipe gelöscht.', 1, true), message())
 end)
 
 test('separators: after every group block incl. the last, disabled, idempotent; other empty lines stay', function()
@@ -314,10 +315,51 @@ test('separators: after every group block incl. the last, disabled, idempotent; 
 	local expected = { 'g1a', 'g1b', '#', 'g4', '#', 'empty', 'nogroup', '#' }
 	same(MA.column(part(seq, 1), tag), expected)
 	check(message():find('3 Separatoren eingefügt', 1, true), message())
-	-- second run: old separators are replaced, not duplicated
+	-- second run: the part already is in its final state and is not touched at all
+	local commandsAfterFirstRun = #MA.log.commands
 	MA.answer('1', '', 'group', { separators = true })
 	runPlugin()
 	same(MA.column(part(seq, 1), tag), expected, 'second run')
+	check(#MA.log.commands == commandsAfterFirstRun, 'second run must not issue commands')
+	check(MA.log.undoOpened == 1, 'second run must not open an undo step')
+	check(message():find('nichts geändert', 1, true), message())
+end)
+
+test('report: sorted recipes without separators -> order was correct, separators inserted', function()
+	MA.sequence(1, 'Main', { { no = 1, parts = { { { g = 1 }, { g = 2 } } } } })
+	MA.answer('1', '', 'group', { separators = true })
+	runPlugin()
+	check(message():find('Reihenfolge war bereits korrekt.', 1, true), message())
+	check(message():find('2 Separatoren eingefügt.', 1, true), message())
+end)
+
+test('report: existing separators that are re-set are not reported as inserted', function()
+	local seq = MA.sequence(1, 'Main', {
+		{ no = 1, parts = { { { g = 2, extra = 'g2' }, { sep = true }, { g = 1, extra = 'g1' }, { sep = true } } } },
+	})
+	MA.answer('1', '', 'group', { separators = true })
+	runPlugin()
+	same(MA.column(part(seq, 1), tag), { 'g1', '#', 'g2', '#' })
+	check(message():find('Reihenfolge in 1 von 1 Part geändert.', 1, true), message())
+	check(message():find('Separatoren neu gesetzt: 2 (vorher 2).', 1, true), message())
+end)
+
+test('already sorted, but empty lines to delete: still cleaned up', function()
+	local seq = MA.sequence(1, 'Main', { { no = 1, parts = { { { g = 1, extra = 'g1' }, { g = 2, extra = 'g2' }, { extra = 'empty' } } } } })
+	MA.answer('1', '', 'group', { deleteEmpty = true })
+	runPlugin()
+	same(MA.column(part(seq, 1), tag), { 'g1', 'g2' })
+	check(message():find('Reihenfolge war bereits korrekt.', 1, true), message())
+	check(message():find('1 leere Recipe gelöscht.', 1, true), message())
+end)
+
+test('already sorted, but not split yet: still split', function()
+	local seq = MA.sequence(1, 'Main', { { no = 1, parts = { { { g = 1, extra = 'g1' }, { g = 2, extra = 'g2' } } } } })
+	MA.answer('1', '', 'group', { splitGroups = true })
+	runPlugin()
+	local cue = MA.cue(seq, 1)
+	check(#cue.children == 3, 'expected 3 parts, got ' .. #cue.children)
+	check(message():find('2 neue Parts angelegt.', 1, true), message())
 end)
 
 test('separators: after every preset pool when sorting by preset', function()
@@ -489,7 +531,7 @@ test('priority warning: no warning for different features or disjoint fixtures',
 	})
 	MA.answer('1', '', 'group')
 	runPlugin()
-	check(message():find('2 Parts umsortiert', 1, true), message())
+	check(message():find('Reihenfolge in 2 von 2 Parts geändert.', 1, true), message())
 	check(not message():find('Prioritäten', 1, true), message())
 end)
 

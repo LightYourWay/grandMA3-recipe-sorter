@@ -51,15 +51,37 @@ function Main(display_handle: number, argument: any) {
 	}
 }
 
+function count(n: number, singular: string, plural: string): string {
+	return `${n} ${n === 1 ? singular : plural}`;
+}
+
 function report(display_handle: number, outcome: ReturnType<typeof sortCues>) {
 	const { stats, error } = outcome;
 	const lines = [
-		`${stats.recipes} Recipes in ${stats.parts} Parts / ${stats.cues} Cues geprüft.`,
-		`${stats.changedParts} Parts umsortiert.`,
+		`${count(stats.recipes, 'Recipe', 'Recipes')} in ${count(stats.parts, 'Part', 'Parts')} / ${count(stats.cues, 'Cue', 'Cues')} geprüft.`,
 	];
-	if (stats.deletedEmpty > 0) lines.push(`${stats.deletedEmpty} leere Recipes gelöscht.`);
-	if (stats.separators > 0) lines.push(`${stats.separators} Separatoren eingefügt.`);
-	if (stats.newParts > 0) lines.push(`${stats.newParts} neue Parts angelegt.`);
+	if (stats.unchangedParts === stats.parts && error === undefined) {
+		lines.push('Alles war bereits sortiert, nichts geändert.');
+	} else {
+		lines.push(
+			stats.changedParts > 0
+				? `Reihenfolge in ${stats.changedParts} von ${count(stats.parts, 'Part', 'Parts')} geändert.`
+				: 'Reihenfolge war bereits korrekt.',
+		);
+		if (stats.deletedEmpty > 0) {
+			lines.push(`${count(stats.deletedEmpty, 'leere Recipe', 'leere Recipes')} gelöscht.`);
+		}
+		if (stats.separators > 0 && stats.replacedSeparators === 0) {
+			lines.push(`${count(stats.separators, 'Separator', 'Separatoren')} eingefügt.`);
+		} else if (stats.separators > 0 || stats.replacedSeparators > 0) {
+			lines.push(
+				`Separatoren neu gesetzt: ${stats.separators} (vorher ${stats.replacedSeparators}).`,
+			);
+		}
+		if (stats.newParts > 0) {
+			lines.push(`${count(stats.newParts, 'neuer Part', 'neue Parts')} angelegt.`);
+		}
+	}
 	if (stats.priorityChanges.length > 0) {
 		const shown = stats.priorityChanges.slice(0, MAX_LISTED);
 		lines.push('', 'WARNUNG: Prioritäten geändert! Recipes mit gemeinsamen Fixtures und');

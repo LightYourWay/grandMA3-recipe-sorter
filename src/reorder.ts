@@ -34,9 +34,14 @@ export interface SortStats {
 	cues: number;
 	parts: number;
 	recipes: number;
+	/** parts whose recipe order changed */
 	changedParts: number;
+	/** parts that were already in the target state and were not touched at all */
+	unchangedParts: number;
 	deletedEmpty: number;
 	separators: number;
+	/** separators removed to be set anew (they don't count as "inserted" for the user) */
+	replacedSeparators: number;
 	newParts: number;
 	/** "<part>: <recipe> ↔ <recipe>" for competing recipes that swapped order */
 	priorityChanges: string[];
@@ -178,6 +183,60 @@ function insertSeparators(
 	}
 }
 
+/**
+ * True when a part already looks exactly like the result would: nothing to delete, recipes
+ * in order, nothing to split and separators exactly after every block. Such parts are not
+ * touched at all, so a repeated run neither rewrites separators nor leaves an undo step.
+ */
+function isAlreadyDone(part: Part, mode: SortMode, options: SortOptions): boolean {
+	const lines = recipesOf(part);
+	const separatorLayout = options.separators;
+
+	// lines the cleanup would delete for good
+	const deletable = lines.filter(
+		(recipe) =>
+			options.deleteEmpty && isEmptyRecipe(recipe) && !(separatorLayout && isSeparator(recipe)),
+	);
+	if (deletable.length > 0) return false;
+
+	const recipes = separatorLayout ? lines.filter((recipe) => !isSeparator(recipe)) : lines;
+	const keyed = recipes.map((recipe) => ({ key: recipeKey(recipe, mode) }));
+	if (!isIdentity(sortedOrder(keyed))) return false;
+
+	if (options.split !== undefined) {
+		const kind = options.split;
+		const splitKeys = new Map<number, boolean>();
+		let withoutKey = 0;
+		for (const recipe of recipes) {
+			const key = splitKey(recipe, kind);
+			if (key === undefined) withoutKey++;
+			else splitKeys.set(key, true);
+		}
+		// same rule as splitPart: nothing to split, or exactly one group / pool and nothing else
+		if (splitKeys.size > 1 || (splitKeys.size === 1 && withoutKey > 0)) return false;
+	}
+
+	if (separatorLayout) {
+		const expected: boolean[] = [];
+		const ends =
+			mode === 'name'
+				? []
+				: blockEnds(
+						recipes.map((_, position) => position),
+						(a, b) => blockId(keyed[a].key, mode) === blockId(keyed[b].key, mode),
+					);
+		recipes.forEach((_, position) => {
+			expected.push(false);
+			if (ends.includes(position)) expected.push(true);
+		});
+		if (expected.length !== lines.length) return false;
+		if (!lines.every((recipe, position) => isSeparator(recipe) === expected[position])) {
+			return false;
+		}
+	}
+	return true;
+}
+
 function sortPart(
 	cue: Cue,
 	part: Part,
@@ -195,7 +254,8 @@ function sortPart(
 			options.deleteEmpty ? isEmptyRecipe(recipe) : isSeparator(recipe),
 		);
 		for (let i = remove.length - 1; i >= 0; i--) {
-			if (!isSeparator(remove[i])) stats.deletedEmpty++;
+			if (isSeparator(remove[i])) stats.replacedSeparators++;
+			else stats.deletedEmpty++;
 			run(`Delete ${address}.${remove[i].index} /nc`, undo);
 		}
 	}
@@ -254,26 +314,37 @@ export function sortCues(cues: Cue[], mode: SortMode, options: SortOptions): Sor
 		parts: 0,
 		recipes: 0,
 		changedParts: 0,
+		unchangedParts: 0,
 		deletedEmpty: 0,
 		separators: 0,
+		replacedSeparators: 0,
 		newParts: 0,
 		priorityChanges: [],
 		unverifiedParts: [],
 	};
 
-	// one undo step for the whole run → a single "Oops" reverts everything
-	const undo = CreateUndo('Recipe Sorter');
+	// one undo step for the whole run → a single "Oops" reverts everything. It is only
+	// opened once something changes, so a run with nothing to do leaves no empty Oops step.
+	let undo: UndoHandle | undefined;
 	const [ok, err] = pcall(() => {
 		for (const cue of cues) {
 			stats.cues++;
 			// parts created by splitting are appended; only sort the parts that existed before
 			for (const part of partsOf(cue)) {
 				stats.parts++;
+				if (isAlreadyDone(part, mode, options)) {
+					stats.unchangedParts++;
+					stats.recipes += recipesOf(part).filter(
+						(recipe) => !(options.separators && isSeparator(recipe)),
+					).length;
+					continue;
+				}
+				undo ??= CreateUndo('Recipe Sorter');
 				sortPart(cue, part, mode, options, undo, stats);
 			}
 		}
 	});
-	CloseUndo(undo);
+	if (undo !== undefined) CloseUndo(undo);
 
 	return ok ? { stats } : { stats, error: tostring(err) };
 }

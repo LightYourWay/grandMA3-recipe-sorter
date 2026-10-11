@@ -27,7 +27,9 @@ Neue Parts bekommen die Fade- und Delay-Zeiten des ursprünglichen Parts (Cue In
 
 Beim ersten Start ist die selektierte Sequence vorbelegt, danach jeweils die zuletzt benutzten Einstellungen. Findet das Plugin keine Sequence oder keine Cues, erscheint eine Meldung und das Pop-up öffnet sich mit den eingegebenen Werten erneut.
 
-Zum Schluss zeigt eine Meldung, wie viele Recipes, Parts und Cues geprüft und wie viele Parts umsortiert wurden, sowie gelöschte Recipes, eingefügte Separatoren und neue Parts (auch im Command Line Feedback). Mit Please wird die Meldung bestätigt.
+Zum Schluss zeigt eine Meldung, wie viele Recipes, Parts und Cues geprüft wurden, in wie vielen Parts sich die Reihenfolge geändert hat (bzw. „Reihenfolge war bereits korrekt“), sowie gelöschte Recipes, Separatoren und neue Parts (auch im Command Line Feedback). Mit Please wird die Meldung bestätigt.
+
+Parts, die bereits exakt im Zielzustand sind (sortiert, Separatoren an der richtigen Stelle, nichts zu löschen oder aufzuteilen), werden gar nicht angefasst. Ist alles schon fertig, meldet das Plugin „Alles war bereits sortiert, nichts geändert.“ und legt keinen Undo-Schritt an – ein folgendes `Oops` betrifft dann weiterhin die Aktion davor.
 
 ### Prioritäts-Warnung
 
