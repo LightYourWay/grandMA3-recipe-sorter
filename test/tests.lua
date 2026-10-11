@@ -268,6 +268,207 @@ test('report lists counts', function()
 end)
 
 -- ****************************************************************
+-- v0.2: options
+-- ****************************************************************
+
+-- tag of a recipe line; separators show as '#' (with '!' if they are not disabled)
+local function tag(r)
+	if r.name == '#########' then
+		return r.enabled == false and '#' or '#!'
+	end
+	return r.extra or '-'
+end
+
+local function message()
+	return MA.log.messages[#MA.log.messages] or ''
+end
+
+test('delete empty: removes lines without group and preset', function()
+	local seq = MA.sequence(1, 'Main', {
+		{ no = 1, parts = { { { g = 2, extra = 'b' }, { extra = 'e1' }, { g = 1, extra = 'a' }, { sep = true }, { p = { 4, 1 }, extra = 'p' } } } },
+	})
+	MA.answer('1', '', 'group', { deleteEmpty = true })
+	runPlugin()
+	same(MA.column(part(seq, 1), tag), { 'a', 'b', 'p' })
+	check(message():find('1 leere Recipes gelöscht', 1, true), message())
+end)
+
+test('separators: after every group block incl. the last, disabled, idempotent', function()
+	local seq = MA.sequence(1, 'Main', {
+		{
+			no = 1,
+			parts = {
+				{
+					{ g = 4, extra = 'g4' },
+					{ extra = 'empty' },
+					{ g = 1, extra = 'g1a' },
+					{ p = { 4, 1 }, extra = 'nogroup' },
+					{ g = 1, extra = 'g1b' },
+				},
+			},
+		},
+	})
+	MA.answer('1', '', 'group', { separators = true })
+	runPlugin()
+	local expected = { 'g1a', 'g1b', '#', 'g4', '#', 'nogroup', '#' }
+	same(MA.column(part(seq, 1), tag), expected)
+	check(message():find('3 Separatoren eingefügt', 1, true), message())
+	-- second run: old separators are replaced, not duplicated
+	MA.answer('1', '', 'group', { separators = true })
+	runPlugin()
+	same(MA.column(part(seq, 1), tag), expected, 'second run')
+end)
+
+test('separators: after every preset pool when sorting by preset', function()
+	local seq = MA.sequence(1, 'Main', {
+		{
+			no = 1,
+			parts = {
+				{
+					{ g = 1, p = { 4, 8 }, extra = '4.8' },
+					{ g = 1, extra = 'none' },
+					{ g = 1, p = { 1, 2 }, extra = '1.2' },
+					{ g = 1, p = { 4, 4 }, extra = '4.4' },
+					{ g = 1, p = { 2, 2 }, extra = '2.2' },
+				},
+			},
+		},
+	})
+	MA.answer('1', '', 'preset', { separators = true })
+	runPlugin()
+	same(MA.column(part(seq, 1), tag), { '1.2', '#', '2.2', '#', '4.4', '4.8', '#', 'none', '#' })
+end)
+
+test('separators: name sort adds none and removes old ones', function()
+	local seq = MA.sequence(1, 'Main', {
+		{ no = 1, parts = { { { g = 1, name = 'b', extra = 'b' }, { sep = true }, { g = 2, name = 'a', extra = 'a' }, { sep = true } } } },
+	})
+	MA.answer('1', '', 'name', { separators = true })
+	runPlugin()
+	same(MA.column(part(seq, 1), tag), { 'a', 'b' })
+end)
+
+test('split groups: every further group gets a new part with the original timing', function()
+	local seq = MA.sequence(1, 'Main', {
+		{
+			no = 1,
+			timing = { cueinfade = 2, cueindelay = 1, cueoutfade = 'CueTiming', preset4fade = 3 },
+			parts = {
+				{
+					{ g = 4, p = { 4, 4 }, extra = 'g4-color' },
+					{ g = 1, extra = 'g1' },
+					{ g = 7, extra = 'g7' },
+					{ p = { 2, 2 }, extra = 'nogroup' },
+					{ g = 4, p = { 2, 2 }, extra = 'g4-pos' },
+				},
+			},
+		},
+	})
+	MA.answer('1', '', 'group', { splitGroups = true })
+	runPlugin()
+	local cue = MA.cue(seq, 1)
+	check(#cue.children == 3, 'expected 3 parts, got ' .. #cue.children)
+	same(MA.column(cue.children[1], tag), { 'g1', 'nogroup' }, 'part 0')
+	same(MA.column(cue.children[2], tag), { 'g4-color', 'g4-pos' }, 'part 1')
+	same(MA.column(cue.children[3], tag), { 'g7' }, 'part 2')
+	for i = 2, 3 do
+		local p = cue.children[i]
+		check(p.part == i - 1, 'part number ' .. tostring(p.part))
+		check(p.cueinfade == 2 and p.cueindelay == 1 and p.cueoutfade == 'CueTiming' and p.preset4fade == 3, 'timing not copied')
+	end
+	check(message():find('2 neue Parts angelegt', 1, true), message())
+end)
+
+test('split presets: every further preset pool gets a new part, numbered after existing parts', function()
+	local seq = MA.sequence(1, 'Main', {
+		{
+			no = 1,
+			parts = {
+				{ { g = 1, p = { 4, 4 }, extra = 'c1' }, { g = 2, p = { 1, 2 }, extra = 'd' }, { g = 3, p = { 4, 8 }, extra = 'c2' } },
+				{ { g = 9, extra = 'other-part' } },
+			},
+		},
+	})
+	MA.answer('1', '', 'preset', { splitPresets = true })
+	runPlugin()
+	local cue = MA.cue(seq, 1)
+	same(MA.column(cue.children[1], tag), { 'd' }, 'part 0')
+	same(MA.column(cue.children[2], tag), { 'other-part' }, 'existing part 1')
+	same(MA.column(cue.children[3], tag), { 'c1', 'c2' }, 'new part')
+	check(cue.children[3].part == 2, 'new part should be part 2, is ' .. tostring(cue.children[3].part))
+end)
+
+test('split + separators: each part ends with a separator', function()
+	local seq = MA.sequence(1, 'Main', {
+		{ no = 1, parts = { { { g = 2, extra = 'g2' }, { g = 1, extra = 'g1' } } } },
+	})
+	MA.answer('1', '', 'group', { splitGroups = true, separators = true })
+	runPlugin()
+	local cue = MA.cue(seq, 1)
+	same(MA.column(cue.children[1], tag), { 'g1', '#' }, 'part 0')
+	same(MA.column(cue.children[2], tag), { 'g2', '#' }, 'part 1')
+end)
+
+test('both split options: error and the dialog re-opens', function()
+	local seq = MA.sequence(1, 'Main', { { no = 1, parts = { { { g = 2 }, { g = 1 } } } } })
+	MA.answer('1', '', 'group', { splitGroups = true, splitPresets = true })
+	MA.cancel()
+	runPlugin()
+	check(MA.log.messages[1]:find('nur eine Split', 1, true), tostring(MA.log.messages[1]))
+	check(#MA.log.dialogs == 2, 'dialog should re-open')
+	check(MA.log.undoOpened == 0, 'nothing must change')
+end)
+
+test('priority warning: overlapping groups with the same feature swapped', function()
+	MA.fixtures(3, { 1, 2, 3, 4, 5, 6, 7, 8 })
+	MA.fixtures(4, { 1, 2, 3, 4 })
+	MA.sequence(1, 'Main', { { no = 1, parts = { { { g = 4, p = { 4, 4 } }, { g = 3, p = { 4, 8 } } } } } })
+	MA.answer('1', '', 'group')
+	runPlugin()
+	check(message():find('Prioritäten geändert', 1, true), message())
+	check(message():find('Group 4/Preset 4.4 <%-> Group 3/Preset 4.8'), message())
+end)
+
+test('priority warning: no warning for different features or disjoint fixtures', function()
+	MA.fixtures(3, { 1, 2, 3, 4, 5, 6, 7, 8 })
+	MA.fixtures(4, { 1, 2, 3, 4 })
+	MA.sequence(1, 'Main', {
+		-- same fixtures, different feature groups (Color vs Position)
+		{ no = 1, parts = { { { g = 4, p = { 4, 4 } }, { g = 3, p = { 2, 2 } } } } },
+		-- same feature, disjoint fixtures (group 1 has its own fixtures)
+		{ no = 2, parts = { { { g = 4, p = { 4, 4 } }, { g = 1, p = { 4, 8 } } } } },
+	})
+	MA.answer('1', '', 'group')
+	runPlugin()
+	check(message():find('2 Parts umsortiert', 1, true), message())
+	check(not message():find('Prioritäten', 1, true), message())
+end)
+
+test('priority warning: presets of the All pools count as every feature', function()
+	MA.fixtures(3, { 1, 2, 3, 4, 5, 6, 7, 8 })
+	MA.fixtures(4, { 1, 2, 3, 4 })
+	MA.sequence(1, 'Main', { { no = 1, parts = { { { g = 4, p = { 2, 2 } }, { g = 3, p = { 21, 1 } } } } } })
+	MA.answer('1', '', 'group')
+	runPlugin()
+	check(message():find('Prioritäten geändert', 1, true), message())
+end)
+
+test('options are remembered', function()
+	MA.sequence(1, 'Main', { { no = 1, parts = { { { g = 1 } } } } })
+	MA.answer('1', '', 'preset', { separators = true, splitGroups = true })
+	runPlugin()
+	MA.cancel()
+	runPlugin()
+	local states = {}
+	for _, state in ipairs(MA.log.dialogs[2].states) do
+		states[state.name] = state.state
+	end
+	check(states['Separatoren einfügen'] == true, 'separators not remembered')
+	check(states['Split: Groups in Parts'] == true, 'split not remembered')
+	check(states['Leere Recipes löschen'] == false, 'delete empty should be off')
+end)
+
+-- ****************************************************************
 
 local failures = 0
 for _, t in ipairs(tests) do

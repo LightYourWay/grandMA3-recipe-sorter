@@ -96,3 +96,34 @@ export function sortedOrder(items: Keyed[]): number[] {
 export function isIdentity(order: number[]): boolean {
 	return order.every((position, index) => position === index);
 }
+
+/**
+ * Positions (0-based) of the last item of every block; a block is a run of neighbours for
+ * which `sameBlock` holds. The last item always ends a block.
+ */
+export function blockEnds<T>(items: T[], sameBlock: (a: T, b: T) => boolean): number[] {
+	const ends: number[] = [];
+	items.forEach((item, position) => {
+		const next = position + 1 < items.length ? items[position + 1] : undefined;
+		if (next === undefined || !sameBlock(item, next)) ends.push(position);
+	});
+	return ends;
+}
+
+/**
+ * Pairs of ids whose relative order differs between `before` and `after` (both list the
+ * same ids). Returned as [earlier-before, later-before].
+ */
+export function swappedPairs(before: number[], after: number[]): [number, number][] {
+	const afterPosition = new Map<number, number>();
+	after.forEach((id, position) => afterPosition.set(id, position));
+	const pairs: [number, number][] = [];
+	for (let i = 0; i < before.length; i++) {
+		for (let j = i + 1; j < before.length; j++) {
+			const a = afterPosition.get(before[i]);
+			const b = afterPosition.get(before[j]);
+			if (a !== undefined && b !== undefined && a > b) pairs.push([before[i], before[j]]);
+		}
+	}
+	return pairs;
+}

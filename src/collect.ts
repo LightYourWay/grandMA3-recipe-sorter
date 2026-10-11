@@ -117,3 +117,96 @@ export function recipeKey(recipe: Recipe, mode: SortMode): SortKey {
 		}
 	}
 }
+
+function groupOf(recipe: Recipe): Group | undefined {
+	const group = recipe.selection as GenericObj | undefined;
+	return group !== undefined && isClass(group, 'Group') ? group : undefined;
+}
+
+function presetOf(recipe: Recipe): Preset | undefined {
+	const preset = recipe.values as GenericObj | undefined;
+	return preset !== undefined && isClass(preset, 'Preset') ? preset : undefined;
+}
+
+/** "Empty" recipe lines have neither a group nor a preset; separators are empty lines. */
+export function isEmptyRecipe(recipe: Recipe): boolean {
+	return recipe.selection === undefined && recipe.values === undefined;
+}
+
+export type SplitKind = 'groups' | 'presets';
+
+/** Number of the part a recipe goes to when splitting: group number or preset pool number. */
+export function splitKey(recipe: Recipe, kind: SplitKind): number | undefined {
+	if (kind === 'groups') {
+		const group = groupOf(recipe);
+		return group !== undefined ? poolNumber(group) : undefined;
+	}
+	const preset = presetOf(recipe);
+	return preset !== undefined ? poolNumber(preset.Parent()) : undefined;
+}
+
+/** Short label for messages, e.g. "Group 4/Preset 4.4". */
+export function recipeLabel(recipe: Recipe): string {
+	const group = groupOf(recipe);
+	const preset = presetOf(recipe);
+	const parts: string[] = [];
+	if (group !== undefined) parts.push(`Group ${formatInt(poolNumber(group))}`);
+	if (preset !== undefined) {
+		parts.push(`Preset ${formatInt(poolNumber(preset.Parent()))}.${formatInt(poolNumber(preset))}`);
+	}
+	return parts.length > 0 ? parts.join('/') : recipe.name;
+}
+
+/**
+ * What a recipe line controls: the subfixtures of its group and the feature group of its
+ * preset. `true` stands for "unknown, assume everything".
+ */
+export interface Footprint {
+	fixtures: Map<number, boolean> | true;
+	features: string | true | undefined;
+}
+
+export function footprintOf(recipe: Recipe): Footprint {
+	const group = groupOf(recipe);
+	let fixtures: Map<number, boolean> | true = new Map();
+	if (group !== undefined) {
+		// property names are case-insensitive in MA; lower case is what was verified in onPC
+		const [ok, data] = pcall(
+			() => (group as unknown as { selectiondata?: FixtureSelectionData[] }).selectiondata,
+		);
+		if (ok && data !== undefined) {
+			const set = new Map<number, boolean>();
+			for (const entry of data) set.set(entry.sf_index, true);
+			fixtures = set;
+		} else {
+			fixtures = true;
+		}
+	}
+
+	const preset = presetOf(recipe);
+	let features: string | true | undefined;
+	if (preset !== undefined) {
+		// presets of the "All" pools report an empty feature group: they can hold anything
+		const [ok, featureGroup] = pcall(
+			() => (preset as unknown as { featuregroup?: unknown }).featuregroup,
+		);
+		features = ok && typeof featureGroup === 'string' && featureGroup !== '' ? featureGroup : true;
+	} else {
+		const [ok, ownData] = pcall(
+			() => (recipe as unknown as { owndatapresent?: unknown }).owndatapresent,
+		);
+		features = ok && ownData === true ? true : undefined;
+	}
+	return { fixtures, features };
+}
+
+/** Two recipe lines compete when they share a subfixture and a feature group. */
+export function footprintsOverlap(a: Footprint, b: Footprint): boolean {
+	if (a.features === undefined || b.features === undefined) return false;
+	if (a.features !== true && b.features !== true && a.features !== b.features) return false;
+	if (a.fixtures === true || b.fixtures === true) return true;
+	for (const [fixture] of a.fixtures) {
+		if (b.fixtures.has(fixture)) return true;
+	}
+	return false;
+}

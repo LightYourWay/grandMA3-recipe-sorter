@@ -49,6 +49,24 @@ function Obj:Children()
 	return list
 end
 
+-- property names are case-insensitive in MA; the mock stores them in lower case
+function Obj:Get(name)
+	return self[name:lower()]
+end
+
+function Obj:Set(name, value)
+	self[name:lower()] = value
+end
+
+-- like MA3 2.4: appended parts start with part number 0 and must be renumbered
+function Obj:Append(class, undo)
+	assert(undo == M.UNDO, 'Append without undo handle')
+	if class == 'Part' then
+		return adopt(self, new('Part', { part = 0, name = 'Part' }))
+	end
+	return adopt(self, new(class, { rawname = '', enabled = true }))
+end
+
 -- ****************************************************************
 -- show data builders
 -- ****************************************************************
@@ -64,10 +82,27 @@ function M.reset()
 	M.log = { commands = {}, moves = 0, undoOpened = 0, undoClosed = 0, dialogs = {}, messages = {}, prints = {} }
 end
 
+-- groups get disjoint fixtures (no*100+1 .. no*100+4) unless set with M.fixtures()
 function M.group(no)
-	M.groups[no] = M.groups[no] or new('Group', { no = no, name = 'Group ' .. no })
+	if not M.groups[no] then
+		local data = {}
+		for i = 1, 4 do
+			data[i] = { sf_index = no * 100 + i }
+		end
+		M.groups[no] = new('Group', { no = no, name = 'Group ' .. no, selectiondata = data })
+	end
 	return M.groups[no]
 end
+
+function M.fixtures(groupNo, list)
+	local data = {}
+	for i, sf in ipairs(list) do
+		data[i] = { sf_index = sf }
+	end
+	M.group(groupNo).selectiondata = data
+end
+
+local FEATURE_GROUPS = { 'Dimmer', 'Position', 'Gobo', 'Color', 'Beam', 'Focus', 'Control', 'Shapers', 'Video' }
 
 function M.preset(pool, no)
 	M.presetPools[pool] = M.presetPools[pool] or new('Presets', { no = pool, index = pool })
@@ -77,14 +112,18 @@ function M.preset(pool, no)
 			return preset
 		end
 	end
-	return adopt(presets, new('Preset', { no = no, name = 'Preset ' .. pool .. '.' .. no }))
+	-- presets of the "All" pools (21+) report an empty feature group
+	local fields = { no = no, name = 'Preset ' .. pool .. '.' .. no, featuregroup = FEATURE_GROUPS[pool] or '' }
+	return adopt(presets, new('Preset', fields))
 end
 
--- spec: { g = 5, p = { 4, 1 }, name = 'x', extra = 'anything' }
+-- spec: { g = 5, p = { 4, 1 }, name = 'x', extra = 'anything', sep = true }
 local function recipe(spec)
 	-- MA3 2.4 reports recipe lines as "StandardRecipe"
 	return new('StandardRecipe', {
-		rawname = spec.name or '',
+		rawname = spec.sep and '#########' or spec.name or '',
+		enabled = not spec.sep,
+		owndatapresent = false,
 		selection = spec.g and M.group(spec.g) or nil,
 		values = spec.p and M.preset(spec.p[1], spec.p[2]) or nil,
 		matricks = spec.matricks,
@@ -108,6 +147,9 @@ function M.sequence(no, name, cues)
 		local cue = adopt(sequence, new('Cue', { no = math.floor(cueSpec.no * 1000), name = 'Cue ' .. cueSpec.no }))
 		for partIndex, recipes in ipairs(cueSpec.parts) do
 			local part = adopt(cue, new('Part', { part = partIndex - 1, name = 'Part ' .. (partIndex - 1) }))
+			for key, value in pairs(cueSpec.timing or {}) do
+				part[key] = value
+			end
 			for _, spec in ipairs(recipes) do
 				adopt(part, recipe(spec))
 			end
@@ -226,23 +268,36 @@ local function findPart(seqNo, cueText, partNo)
 	end
 end
 
--- supports "Move Sequence s Cue c Part p.r At Sequence s Cue c Part p.r" like MA3 2.4:
--- the recipe is taken out and inserted at the target position
+-- supports the commands the plugin issues, with MA3 2.4 semantics:
+--   Move <recipe> At <recipe>   take the recipe out, insert it at the target (any part)
+--   Delete <recipe> /nc         remove the recipe
+-- <recipe> = "Sequence s Cue c Part p.r"
 function Cmd(command, undo)
 	assert(undo == M.UNDO, 'Cmd without undo handle: ' .. command)
+	table.insert(M.log.commands, command)
 	local addr = 'Sequence (%d+) Cue ([%d%.]+) Part (%d+)%.(%d+)'
 	local s1, c1, p1, r1, s2, c2, p2, r2 = command:match('^Move ' .. addr .. ' At ' .. addr .. '$')
-	if not s1 then
-		return 'Illegal command'
+	if s1 then
+		local from, to = findPart(s1, c1, p1), findPart(s2, c2, p2)
+		assert(from and to, 'Move from/to unknown part: ' .. command)
+		local recipe = assert(table.remove(from.children, tonumber(r1)), 'no source recipe: ' .. command)
+		assert(tonumber(r2) <= #to.children + 1, 'target index out of range: ' .. command)
+		table.insert(to.children, tonumber(r2), recipe)
+		recipe.parent = to
+		reindex(from)
+		reindex(to)
+		M.log.moves = M.log.moves + 1
+		return 'OK'
 	end
-	local from, to = findPart(s1, c1, p1), findPart(s2, c2, p2)
-	assert(from and from == to, 'Move across parts or to unknown part: ' .. command)
-	local recipe = table.remove(from.children, tonumber(r1))
-	table.insert(from.children, tonumber(r2), recipe)
-	reindex(from)
-	M.log.moves = M.log.moves + 1
-	table.insert(M.log.commands, command)
-	return 'OK'
+	local s3, c3, p3, r3 = command:match('^Delete ' .. addr .. ' /nc$')
+	if s3 then
+		local part = assert(findPart(s3, c3, p3), 'Delete in unknown part: ' .. command)
+		assert(table.remove(part.children, tonumber(r3)), 'no recipe to delete: ' .. command)
+		reindex(part)
+		M.log.deletes = (M.log.deletes or 0) + 1
+		return 'OK'
+	end
+	return 'Illegal command'
 end
 
 function CreateUndo(text)
@@ -273,8 +328,16 @@ function MessageBox(options)
 	return respond(options)
 end
 
--- queue an answer for the sort dialog
-function M.answer(sequences, cues, mode)
+-- checkbox names are matched by a distinctive part of their label
+local STATE_PATTERNS = {
+	deleteEmpty = 'Leere',
+	separators = 'Separatoren',
+	splitGroups = 'Groups in Parts',
+	splitPresets = 'Preset%-Pools in Parts',
+}
+
+-- queue an answer for the sort dialog; opts = { deleteEmpty = true, separators = true, ... }
+function M.answer(sequences, cues, mode, opts)
 	local modeIndex = ({ group = 1, preset = 2, name = 3 })[mode]
 	table.insert(M.dialogQueue, function(options)
 		local selector = options.selectors[1]
@@ -284,12 +347,23 @@ function M.answer(sequences, cues, mode)
 			labelOk = labelOk or value == modeIndex
 		end
 		assert(labelOk, 'selector has no value ' .. modeIndex)
+		local states = {}
+		for key, pattern in pairs(STATE_PATTERNS) do
+			local found
+			for _, state in ipairs(options.states or {}) do
+				if state.name:find(pattern) then
+					found = state.name
+				end
+			end
+			assert(found, 'dialog has no checkbox for ' .. key)
+			states[found] = (opts or {})[key] == true
+		end
 		return {
 			success = true,
 			result = 1,
 			inputs = { [options.inputs[1].name] = sequences, [options.inputs[2].name] = cues },
 			selectors = { [selectorName] = modeIndex },
-			states = {},
+			states = states,
 		}
 	end)
 end

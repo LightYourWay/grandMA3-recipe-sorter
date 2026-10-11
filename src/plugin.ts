@@ -5,6 +5,7 @@ import { sortCues } from './reorder';
 const [pluginName, componentName, signalTable, my_handle] = [...$vararg] as EnvArgs;
 
 const TITLE = 'Recipe Sorter';
+const MAX_LISTED = 8;
 
 // ****************************************************************
 // plugin main entry point
@@ -17,6 +18,11 @@ function Main(display_handle: number, argument: any) {
 		const answer = askForRequest(display_handle, request);
 		if (answer === undefined) return;
 		request = answer;
+
+		if (request.splitConflict) {
+			showMessage(display_handle, TITLE, 'Bitte nur eine Split-Option wählen.');
+			continue;
+		}
 
 		if (request.sequences === '') {
 			showMessage(display_handle, TITLE, 'Bitte mindestens eine Sequence angeben.');
@@ -40,7 +46,7 @@ function Main(display_handle: number, argument: any) {
 		}
 
 		saveSettings(request);
-		report(display_handle, sortCues(cues, request.mode));
+		report(display_handle, sortCues(cues, request.mode, request.options));
 		return;
 	}
 }
@@ -51,6 +57,18 @@ function report(display_handle: number, outcome: ReturnType<typeof sortCues>) {
 		`${stats.recipes} Recipes in ${stats.parts} Parts / ${stats.cues} Cues geprüft.`,
 		`${stats.changedParts} Parts umsortiert.`,
 	];
+	if (stats.deletedEmpty > 0) lines.push(`${stats.deletedEmpty} leere Recipes gelöscht.`);
+	if (stats.separators > 0) lines.push(`${stats.separators} Separatoren eingefügt.`);
+	if (stats.newParts > 0) lines.push(`${stats.newParts} neue Parts angelegt.`);
+	if (stats.priorityChanges.length > 0) {
+		const shown = stats.priorityChanges.slice(0, MAX_LISTED);
+		lines.push('', 'WARNUNG: Prioritäten geändert! Recipes mit gemeinsamen Fixtures und');
+		lines.push('Attributen haben die Reihenfolge getauscht, der Look kann sich ändern:');
+		shown.forEach((change) => lines.push(`  ${change}`));
+		const hidden = stats.priorityChanges.length - shown.length;
+		if (hidden > 0) lines.push(`  ... und ${hidden} weitere`);
+		lines.push('Mit "Oops" rückgängig machen.');
+	}
 	if (stats.unverifiedParts.length > 0) {
 		lines.push('', 'WARNUNG: Reihenfolge nach dem Sortieren nicht korrekt in:');
 		stats.unverifiedParts.forEach((label) => lines.push(`  ${label}`));

@@ -2,14 +2,44 @@
 // apply the new recipe order inside each part
 // ****************************************************************
 
-import { cueNumber, formatInt, partsOf, poolNumber, recipeKey, recipesOf } from './collect';
-import { SortMode, isIdentity, sortedOrder } from './sort';
+import {
+	Footprint,
+	SplitKind,
+	cueNumber,
+	footprintOf,
+	footprintsOverlap,
+	formatInt,
+	isEmptyRecipe,
+	partsOf,
+	poolNumber,
+	recipeKey,
+	recipeLabel,
+	recipesOf,
+	splitKey,
+} from './collect';
+import { Keyed, SortKey, SortMode, blockEnds, isIdentity, sortedOrder, swappedPairs } from './sort';
+
+export interface SortOptions {
+	/** delete recipe lines without group and preset */
+	deleteEmpty: boolean;
+	/** separator line after every group block (group sort) or preset pool block (preset sort) */
+	separators: boolean;
+	/** move every group / preset pool into its own part */
+	split: SplitKind | undefined;
+}
+
+export const SEPARATOR_NAME = '#########';
 
 export interface SortStats {
 	cues: number;
 	parts: number;
 	recipes: number;
 	changedParts: number;
+	deletedEmpty: number;
+	separators: number;
+	newParts: number;
+	/** "<part>: <recipe> ↔ <recipe>" for competing recipes that swapped order */
+	priorityChanges: string[];
 	/** parts whose recipes are still out of order after sorting (should stay empty) */
 	unverifiedParts: string[];
 }
@@ -19,54 +49,219 @@ export interface SortOutcome {
 	error?: string;
 }
 
+/** Fade and delay properties a new part inherits from the part it was split from. */
+const TIMING_PROPERTIES = ['CueInFade', 'CueInDelay', 'CueOutFade', 'CueOutDelay', 'SnapDelay'];
+for (let preset = 1; preset <= 16; preset++) {
+	TIMING_PROPERTIES.push(`Preset${preset}Fade`, `Preset${preset}Delay`);
+}
+
 /** Command-line address of a part, e.g. "Sequence 12 Cue 2.5 Part 0"; recipes are ".<n>". */
-function partAddress(sequence: Sequence, cue: Cue, part: Part): string {
+function partAddress(cue: Cue, part: Part): string {
 	const partNo = (part.part as number | undefined) ?? part.index;
-	return `Sequence ${formatInt(poolNumber(sequence))} Cue ${cueNumber(cue)} Part ${formatInt(partNo)}`;
+	return `Sequence ${formatInt(poolNumber(cue.Parent()))} Cue ${cueNumber(cue)} Part ${formatInt(partNo)}`;
+}
+
+/** Runs a command inside the undo group; commands (unlike Lua Copy/Delete) are undoable. */
+function run(command: string, undo: UndoHandle): void {
+	const result = Cmd(command, undo);
+	if (result !== 'OK') error(`"${command}" failed: ${result}`);
 }
 
 /**
- * Reorders the recipes of one part with the MA "Move" command. Moving keeps every recipe
- * object intact (no property can get lost) and, unlike the Lua object API (Copy/Delete),
- * commands are recorded in the undo handle.
+ * Moves recipes inside one part so the part matches `order`. `current` tracks which
+ * logical item sits at each position and is updated in place.
  */
-function applyOrder(address: string, order: number[], undo: UndoHandle): void {
-	// current[position] = original position of the recipe that sits there now
-	const current = order.map((_, position) => position);
+function applyOrder(address: string, current: number[], order: number[], undo: UndoHandle): void {
 	order.forEach((wanted, target) => {
 		const from = current.indexOf(wanted);
 		if (from === target) return;
 		// everything before `target` is final, so the recipe always moves up
-		const result = Cmd(`Move ${address}.${from + 1} At ${address}.${target + 1}`, undo);
-		if (result !== 'OK') error(`"Move ${address}.${from + 1}" failed: ${result}`);
+		run(`Move ${address}.${from + 1} At ${address}.${target + 1}`, undo);
 		current.splice(from, 1);
 		current.splice(target, 0, wanted);
 	});
 }
 
-export function sortCues(cues: Cue[], mode: SortMode): SortOutcome {
-	const stats: SortStats = { cues: 0, parts: 0, recipes: 0, changedParts: 0, unverifiedParts: [] };
+/** A part after sorting: its address and the recipes (indices into the input list) it holds. */
+interface PartLayout {
+	part: Part;
+	address: string;
+	items: number[];
+}
+
+/**
+ * Keeps the first group / preset pool (and recipes without one) in the original part and
+ * moves every further one into a new part with the original part's fade and delay times.
+ */
+function splitPart(
+	cue: Cue,
+	layout: PartLayout,
+	keys: { key: number | undefined }[],
+	undo: UndoHandle,
+	stats: SortStats,
+): PartLayout[] {
+	const buckets = new Map<number, number[]>();
+	for (const item of layout.items) {
+		const key = keys[item].key;
+		if (key === undefined) continue;
+		const bucket = buckets.get(key) ?? [];
+		bucket.push(item);
+		buckets.set(key, bucket);
+	}
+	const splitKeys: number[] = [];
+	for (const [key] of buckets) splitKeys.push(key);
+	splitKeys.sort((a, b) => a - b);
+	if (splitKeys.length <= 1) return [layout];
+
+	let nextPartNo = 0;
+	for (const part of partsOf(cue)) {
+		nextPartNo = Math.max(nextPartNo, ((part.part as number | undefined) ?? part.index) + 1);
+	}
+
+	const current = [...layout.items];
+	const result: PartLayout[] = [];
+	for (const key of splitKeys.slice(1)) {
+		// Append (not "Store") so programmer values can never end up in the new part
+		const newPart = cue.Append('Part', undo) as Part | undefined;
+		if (newPart === undefined) error('could not create a new part');
+		(newPart as unknown as { part: number }).part = nextPartNo++;
+		for (const property of TIMING_PROPERTIES) {
+			pcall(() => newPart.Set(property as never, layout.part.Get(property as never)));
+		}
+		const address = partAddress(cue, newPart);
+		const items = buckets.get(key) ?? [];
+		items.forEach((item, position) => {
+			const from = current.indexOf(item);
+			run(`Move ${layout.address}.${from + 1} At ${address}.${position + 1}`, undo);
+			current.splice(from, 1);
+		});
+		result.push({ part: newPart, address, items });
+		stats.newParts++;
+	}
+	return [{ ...layout, items: current }, ...result];
+}
+
+/** Block identity for separators: group number or preset pool; name sort has no blocks. */
+function blockId(key: SortKey, mode: SortMode): number | undefined {
+	if (key === undefined || typeof key === 'string') return undefined;
+	return mode === 'group' || mode === 'preset' ? key[0] : undefined;
+}
+
+/** Inserts a disabled "#########" line after every block of a part. */
+function insertSeparators(
+	layout: PartLayout,
+	keyed: Keyed[],
+	mode: SortMode,
+	undo: UndoHandle,
+	stats: SortStats,
+): void {
+	const ends = blockEnds(
+		layout.items,
+		(a, b) => blockId(keyed[a].key, mode) === blockId(keyed[b].key, mode),
+	);
+	let count = layout.items.length;
+	// back to front, so the positions of the remaining block ends stay valid
+	for (let i = ends.length - 1; i >= 0; i--) {
+		const separator = layout.part.Append('StandardRecipe', undo) as Recipe | undefined;
+		if (separator === undefined) error('could not create a separator');
+		separator.name = SEPARATOR_NAME;
+		(separator as unknown as { enabled: boolean }).enabled = false;
+		count++;
+		const target = ends[i] + 2;
+		if (target < count) run(`Move ${layout.address}.${count} At ${layout.address}.${target}`, undo);
+		stats.separators++;
+	}
+}
+
+function sortPart(
+	cue: Cue,
+	part: Part,
+	mode: SortMode,
+	options: SortOptions,
+	undo: UndoHandle,
+	stats: SortStats,
+): void {
+	const address = partAddress(cue, part);
+
+	// 1. empty lines go first: they are deleted, or replaced by fresh separators
+	if (options.deleteEmpty || options.separators) {
+		const empty = recipesOf(part).filter((recipe) => isEmptyRecipe(recipe));
+		for (let i = empty.length - 1; i >= 0; i--) {
+			if (empty[i].name !== SEPARATOR_NAME) stats.deletedEmpty++;
+			run(`Delete ${address}.${empty[i].index} /nc`, undo);
+		}
+	}
+
+	const recipes = recipesOf(part);
+	stats.recipes += recipes.length;
+	// keys are wrapped in objects: nil entries in a Lua array break `#` and everything using it
+	const keyed = recipes.map((recipe) => ({ key: recipeKey(recipe, mode) }));
+	const order = sortedOrder(keyed);
+	const footprints: Footprint[] = recipes.map((recipe) => footprintOf(recipe));
+	const labels = recipes.map((recipe) => recipeLabel(recipe));
+
+	// 2. sort
+	const current = recipes.map((_, position) => position);
+	if (!isIdentity(order)) {
+		applyOrder(address, current, order, undo);
+		stats.changedParts++;
+	}
+
+	// 3. split into parts
+	let layouts: PartLayout[] = [{ part, address, items: current }];
+	if (options.split !== undefined) {
+		const kind = options.split;
+		const splitKeys = recipes.map((recipe) => ({ key: splitKey(recipe, kind) }));
+		layouts = splitPart(cue, layouts[0], splitKeys, undo, stats);
+	}
+
+	// 4. warn when competing recipes (shared fixtures and feature group) swapped order
+	const after: number[] = [];
+	for (const layout of layouts) for (const item of layout.items) after.push(item);
+	const before = recipes.map((_, position) => position);
+	for (const [a, b] of swappedPairs(before, after)) {
+		if (footprintsOverlap(footprints[a], footprints[b])) {
+			stats.priorityChanges.push(`${address}: ${labels[a]} <-> ${labels[b]}`);
+			break;
+		}
+	}
+
+	// 5. separators
+	if (options.separators && mode !== 'name') {
+		for (const layout of layouts) insertSeparators(layout, keyed, mode, undo, stats);
+	}
+
+	// 6. read back: proves the moves landed where intended
+	for (const layout of layouts) {
+		const check = recipesOf(layout.part)
+			.filter((recipe) => !(options.separators && recipe.name === SEPARATOR_NAME))
+			.map((recipe) => ({ key: recipeKey(recipe, mode) }));
+		if (!isIdentity(sortedOrder(check))) stats.unverifiedParts.push(layout.address);
+	}
+}
+
+export function sortCues(cues: Cue[], mode: SortMode, options: SortOptions): SortOutcome {
+	const stats: SortStats = {
+		cues: 0,
+		parts: 0,
+		recipes: 0,
+		changedParts: 0,
+		deletedEmpty: 0,
+		separators: 0,
+		newParts: 0,
+		priorityChanges: [],
+		unverifiedParts: [],
+	};
 
 	// one undo step for the whole run → a single "Oops" reverts everything
 	const undo = CreateUndo('Recipe Sorter');
 	const [ok, err] = pcall(() => {
 		for (const cue of cues) {
 			stats.cues++;
+			// parts created by splitting are appended; only sort the parts that existed before
 			for (const part of partsOf(cue)) {
-				const recipes = recipesOf(part);
 				stats.parts++;
-				stats.recipes += recipes.length;
-
-				const order = sortedOrder(recipes.map((recipe) => ({ key: recipeKey(recipe, mode) })));
-				if (isIdentity(order)) continue;
-
-				const address = partAddress(cue.Parent(), cue, part);
-				applyOrder(address, order, undo);
-				stats.changedParts++;
-
-				// read back: proves the moves landed where intended
-				const after = recipesOf(part).map((recipe) => ({ key: recipeKey(recipe, mode) }));
-				if (!isIdentity(sortedOrder(after))) stats.unverifiedParts.push(address);
+				sortPart(cue, part, mode, options, undo, stats);
 			}
 		}
 	});
