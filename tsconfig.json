@@ -1,0 +1,25 @@
+{
+	"compilerOptions": {
+		"rootDir": "src",
+		"target": "esnext",
+		"lib": ["esnext"],
+		"module": "commonjs",
+		"types": ["@typescript-to-lua/language-extensions", "lua-types/5.4", "grandma3-types"],
+		"strict": true,
+		"plugins": [
+			{
+				"name": "grandma3-tsserver-plugin"
+			}
+		]
+	},
+	"include": ["src/**/*"],
+	"tstl": {
+		"luaTarget": "5.4",
+		"noHeader": true,
+		"luaBundle": "dist",
+		"luaBundleEntry": "src/plugin.ts",
+		"noImplicitSelf": true,
+		"luaLibImport": "require-minimal",
+		"luaPlugins": [{ "name": "grandma3-tstl-plugin", "license": "src/LICENSE" }]
+	}
+}

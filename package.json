@@ -1,0 +1,39 @@
+{
+	"name": "recipe-sorter",
+	"version": "0.1.0",
+	"description": "grandMA3 plugin that sorts the recipe lines of cues by group number, preset number or name.",
+	"author": "Erik Reiner",
+	"license": "MIT",
+	"gma_version": "2.4.2.2",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/LightYourWay/grandMA3-recipe-sorter.git"
+	},
+	"bugs": {
+		"url": "https://github.com/LightYourWay/grandMA3-recipe-sorter/issues"
+	},
+	"homepage": "https://github.com/LightYourWay/grandMA3-recipe-sorter#readme",
+	"scripts": {
+		"build": "tstl",
+		"dev": "tstl --watch",
+		"package": "node scripts/package.mjs",
+		"lint:check": "prettier --check .",
+		"lint:fix": "prettier --write .",
+		"link:types": "npm link ../grandma3-types",
+		"link:plugin": "npm link ../grandma3-tstl-plugin",
+		"link:all": "npm link ../grandma3-types ../grandma3-tstl-plugin",
+		"test": "npm run build && node test/run.mjs"
+	},
+	"devDependencies": {
+		"@types/node": "^24.12.4",
+		"fflate": "^0.8.3",
+		"grandma3-tsserver-plugin": "^0.3.0",
+		"grandma3-tstl-plugin": "^0.7.1",
+		"grandma3-types": "^0.11.0",
+		"lua-types": "^2.14.1",
+		"prettier": "^3.8.3",
+		"typescript": "^6.0.2",
+		"typescript-to-lua": "^1.36.0",
+		"wasmoon": "^1.16.0"
+	}
+}
