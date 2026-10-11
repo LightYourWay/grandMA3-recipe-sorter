@@ -18,9 +18,9 @@ Optionen (Checkboxen, alle frei kombinierbar außer den beiden Split-Optionen):
 
 | Option | Wirkung |
 | --- | --- |
-| **Leere Recipes löschen** | Löscht Recipe Lines ohne Group **und** ohne Preset. |
-| **Separatoren einfügen** | Fügt nach jedem Block eine deaktivierte Zeile `#########` ein, auch nach dem letzten Block. Block = gleiche Group (Group-Sortierung) bzw. gleicher Preset-Pool (Preset-Sortierung); bei Name-Sortierung gibt es keine Separatoren. Leere Zeilen gelten als Separatoren und werden bei jedem Lauf entfernt und neu gesetzt. |
-| **Split: Groups in Parts** | Jede Group bekommt einen eigenen Part. Die erste Group (und Recipes ohne Group) bleiben im ursprünglichen Part, jede weitere Group kommt in einen neuen Part. |
+| **Leere Recipes löschen** | Löscht Recipe Lines ohne Group **und** ohne Preset (auch Separatoren). |
+| **Separatoren einfügen** | Fügt nach jedem Block eine deaktivierte Zeile `#########` ein, auch nach dem letzten Block. Block = gleiche Group (Group-Sortierung) bzw. gleicher Preset-Pool (Preset-Sortierung); bei Name-Sortierung gibt es keine Separatoren. Als Separator gilt nur eine Zeile, die **deaktiviert** ist, **exakt** `#########` heißt und **weder Group noch Preset** hat. Solche Zeilen werden bei jedem Lauf entfernt und neu gesetzt; andere leere Zeilen bleiben stehen. |
+| **Split: Groups in Parts** | Jede Group bekommt einen eigenen, neuen Part. Recipes ohne Group bleiben im ursprünglichen Part, der dadurch auch leer zurückbleiben kann. Ein Part, der bereits genau eine Group enthält, gilt als aufgeteilt; ein erneuter Lauf legt keine weiteren Parts an. |
 | **Split: Preset-Pools in Parts** | Wie oben, aber pro Preset-Pool. |
 
 Neue Parts bekommen die Fade- und Delay-Zeiten des ursprünglichen Parts (Cue In/Out Fade/Delay, Snap Delay, Preset-Zeiten) und die nächste freie Part-Nummer. Sie werden per Lua angelegt, nicht per `Store`, damit keine Programmer-Werte hineingeraten.

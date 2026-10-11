@@ -9,7 +9,9 @@ import {
 	footprintOf,
 	footprintsOverlap,
 	formatInt,
+	SEPARATOR_NAME,
 	isEmptyRecipe,
+	isSeparator,
 	partsOf,
 	poolNumber,
 	recipeKey,
@@ -27,8 +29,6 @@ export interface SortOptions {
 	/** move every group / preset pool into its own part */
 	split: SplitKind | undefined;
 }
-
-export const SEPARATOR_NAME = '#########';
 
 export interface SortStats {
 	cues: number;
@@ -90,8 +90,10 @@ interface PartLayout {
 }
 
 /**
- * Keeps the first group / preset pool (and recipes without one) in the original part and
- * moves every further one into a new part with the original part's fade and delay times.
+ * Moves every group / preset pool into a new part with the original part's fade and delay
+ * times. Recipes without one stay; the original part may end up empty. A part that already
+ * holds exactly one group / pool (and nothing else) counts as split and is left alone, so
+ * running the plugin again doesn't keep creating parts.
  */
 function splitPart(
 	cue: Cue,
@@ -111,7 +113,10 @@ function splitPart(
 	const splitKeys: number[] = [];
 	for (const [key] of buckets) splitKeys.push(key);
 	splitKeys.sort((a, b) => a - b);
-	if (splitKeys.length <= 1) return [layout];
+	if (splitKeys.length === 0) return [layout];
+	const alreadySplit =
+		splitKeys.length === 1 && (buckets.get(splitKeys[0]) ?? []).length === layout.items.length;
+	if (alreadySplit) return [layout];
 
 	let nextPartNo = 0;
 	for (const part of partsOf(cue)) {
@@ -120,7 +125,7 @@ function splitPart(
 
 	const current = [...layout.items];
 	const result: PartLayout[] = [];
-	for (const key of splitKeys.slice(1)) {
+	for (const key of splitKeys) {
 		// Append (not "Store") so programmer values can never end up in the new part
 		const newPart = cue.Append('Part', undo) as Part | undefined;
 		if (newPart === undefined) error('could not create a new part');
@@ -183,12 +188,15 @@ function sortPart(
 ): void {
 	const address = partAddress(cue, part);
 
-	// 1. empty lines go first: they are deleted, or replaced by fresh separators
+	// 1. cleanup: "delete empty" removes every empty line (separators are empty too);
+	//    the separator option alone only removes its own separators to set them anew
 	if (options.deleteEmpty || options.separators) {
-		const empty = recipesOf(part).filter((recipe) => isEmptyRecipe(recipe));
-		for (let i = empty.length - 1; i >= 0; i--) {
-			if (empty[i].name !== SEPARATOR_NAME) stats.deletedEmpty++;
-			run(`Delete ${address}.${empty[i].index} /nc`, undo);
+		const remove = recipesOf(part).filter((recipe) =>
+			options.deleteEmpty ? isEmptyRecipe(recipe) : isSeparator(recipe),
+		);
+		for (let i = remove.length - 1; i >= 0; i--) {
+			if (!isSeparator(remove[i])) stats.deletedEmpty++;
+			run(`Delete ${address}.${remove[i].index} /nc`, undo);
 		}
 	}
 
@@ -234,7 +242,7 @@ function sortPart(
 	// 6. read back: proves the moves landed where intended
 	for (const layout of layouts) {
 		const check = recipesOf(layout.part)
-			.filter((recipe) => !(options.separators && recipe.name === SEPARATOR_NAME))
+			.filter((recipe) => !(options.separators && isSeparator(recipe)))
 			.map((recipe) => ({ key: recipeKey(recipe, mode) }));
 		if (!isIdentity(sortedOrder(check))) stats.unverifiedParts.push(layout.address);
 	}

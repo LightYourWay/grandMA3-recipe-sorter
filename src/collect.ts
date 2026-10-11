@@ -128,9 +128,20 @@ function presetOf(recipe: Recipe): Preset | undefined {
 	return preset !== undefined && isClass(preset, 'Preset') ? preset : undefined;
 }
 
-/** "Empty" recipe lines have neither a group nor a preset; separators are empty lines. */
+/** "Empty" recipe lines have neither a group nor a preset. */
 export function isEmptyRecipe(recipe: Recipe): boolean {
 	return recipe.selection === undefined && recipe.values === undefined;
+}
+
+export const SEPARATOR_NAME = '#########';
+
+/** A separator is exactly what the plugin creates: disabled, named "#########", empty. */
+export function isSeparator(recipe: Recipe): boolean {
+	return (
+		recipe.name === SEPARATOR_NAME &&
+		(recipe as unknown as { enabled?: boolean }).enabled === false &&
+		isEmptyRecipe(recipe)
+	);
 }
 
 export type SplitKind = 'groups' | 'presets';

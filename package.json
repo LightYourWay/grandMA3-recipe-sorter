@@ -1,6 +1,6 @@
 {
 	"name": "recipe-sorter",
-	"version": "0.2.0",
+	"version": "0.3.0",
 	"description": "grandMA3 plugin that sorts the recipe lines of cues by group number, preset number or name.",
 	"author": "Erik Reiner",
 	"license": "MIT",

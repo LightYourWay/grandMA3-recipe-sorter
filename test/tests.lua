@@ -293,7 +293,7 @@ test('delete empty: removes lines without group and preset', function()
 	check(message():find('1 leere Recipes gelöscht', 1, true), message())
 end)
 
-test('separators: after every group block incl. the last, disabled, idempotent', function()
+test('separators: after every group block incl. the last, disabled, idempotent; other empty lines stay', function()
 	local seq = MA.sequence(1, 'Main', {
 		{
 			no = 1,
@@ -310,7 +310,8 @@ test('separators: after every group block incl. the last, disabled, idempotent',
 	})
 	MA.answer('1', '', 'group', { separators = true })
 	runPlugin()
-	local expected = { 'g1a', 'g1b', '#', 'g4', '#', 'nogroup', '#' }
+	-- the plain empty line is no separator: it stays and sorts with the group-less recipes
+	local expected = { 'g1a', 'g1b', '#', 'g4', '#', 'empty', 'nogroup', '#' }
 	same(MA.column(part(seq, 1), tag), expected)
 	check(message():find('3 Separatoren eingefügt', 1, true), message())
 	-- second run: old separators are replaced, not duplicated
@@ -339,6 +340,35 @@ test('separators: after every preset pool when sorting by preset', function()
 	same(MA.column(part(seq, 1), tag), { '1.2', '#', '2.2', '#', '4.4', '4.8', '#', 'none', '#' })
 end)
 
+test('separators: only exact separators (disabled, "#########", empty) are replaced', function()
+	local seq = MA.sequence(1, 'Main', {
+		{
+			no = 1,
+			parts = {
+				{
+					{ g = 2, extra = 'g2' },
+					{ sep = true },
+					{ g = 1, extra = 'g1' },
+					{ extra = 'enabled-hash', name = '#########' },
+					{ g = 3, extra = 'hash-with-group', name = '#########' },
+				},
+			},
+		},
+	})
+	-- make the look-alikes exact apart from one property each
+	local recipes = MA.cue(seq, 1).children[1].children
+	recipes[4].enabled = true
+	recipes[5].enabled = false
+	MA.answer('1', '', 'group', { separators = true })
+	runPlugin()
+	same(MA.column(part(seq, 1), function(r)
+		if r.extra then
+			return r.extra
+		end
+		return tag(r)
+	end), { 'g1', '#', 'g2', '#', 'hash-with-group', '#', 'enabled-hash', '#' })
+end)
+
 test('separators: name sort adds none and removes old ones', function()
 	local seq = MA.sequence(1, 'Main', {
 		{ no = 1, parts = { { { g = 1, name = 'b', extra = 'b' }, { sep = true }, { g = 2, name = 'a', extra = 'a' }, { sep = true } } } },
@@ -348,7 +378,7 @@ test('separators: name sort adds none and removes old ones', function()
 	same(MA.column(part(seq, 1), tag), { 'a', 'b' })
 end)
 
-test('split groups: every further group gets a new part with the original timing', function()
+test('split groups: every group gets a new part with the original timing', function()
 	local seq = MA.sequence(1, 'Main', {
 		{
 			no = 1,
@@ -367,19 +397,36 @@ test('split groups: every further group gets a new part with the original timing
 	MA.answer('1', '', 'group', { splitGroups = true })
 	runPlugin()
 	local cue = MA.cue(seq, 1)
-	check(#cue.children == 3, 'expected 3 parts, got ' .. #cue.children)
-	same(MA.column(cue.children[1], tag), { 'g1', 'nogroup' }, 'part 0')
-	same(MA.column(cue.children[2], tag), { 'g4-color', 'g4-pos' }, 'part 1')
-	same(MA.column(cue.children[3], tag), { 'g7' }, 'part 2')
-	for i = 2, 3 do
+	check(#cue.children == 4, 'expected 4 parts, got ' .. #cue.children)
+	same(MA.column(cue.children[1], tag), { 'nogroup' }, 'part 0 keeps recipes without group')
+	same(MA.column(cue.children[2], tag), { 'g1' }, 'part 1')
+	same(MA.column(cue.children[3], tag), { 'g4-color', 'g4-pos' }, 'part 2')
+	same(MA.column(cue.children[4], tag), { 'g7' }, 'part 3')
+	for i = 2, 4 do
 		local p = cue.children[i]
 		check(p.part == i - 1, 'part number ' .. tostring(p.part))
 		check(p.cueinfade == 2 and p.cueindelay == 1 and p.cueoutfade == 'CueTiming' and p.preset4fade == 3, 'timing not copied')
 	end
-	check(message():find('2 neue Parts angelegt', 1, true), message())
+	check(message():find('3 neue Parts angelegt', 1, true), message())
 end)
 
-test('split presets: every further preset pool gets a new part, numbered after existing parts', function()
+test('split again: parts holding a single group are left alone', function()
+	local seq = MA.sequence(1, 'Main', {
+		{ no = 1, parts = { { { g = 4, extra = 'g4' }, { g = 1, extra = 'g1' } } } },
+	})
+	MA.answer('1', '', 'group', { splitGroups = true })
+	runPlugin()
+	MA.answer('1', '', 'group', { splitGroups = true })
+	runPlugin()
+	local cue = MA.cue(seq, 1)
+	check(#cue.children == 3, 'expected 3 parts after two runs, got ' .. #cue.children)
+	same(MA.column(cue.children[1], tag), {}, 'part 0 stays empty')
+	same(MA.column(cue.children[2], tag), { 'g1' }, 'part 1')
+	same(MA.column(cue.children[3], tag), { 'g4' }, 'part 2')
+	check(not message():find('neue Parts', 1, true), 'second run must not create parts: ' .. message())
+end)
+
+test('split presets: every preset pool gets a new part, numbered after existing parts', function()
 	local seq = MA.sequence(1, 'Main', {
 		{
 			no = 1,
@@ -392,10 +439,11 @@ test('split presets: every further preset pool gets a new part, numbered after e
 	MA.answer('1', '', 'preset', { splitPresets = true })
 	runPlugin()
 	local cue = MA.cue(seq, 1)
-	same(MA.column(cue.children[1], tag), { 'd' }, 'part 0')
-	same(MA.column(cue.children[2], tag), { 'other-part' }, 'existing part 1')
-	same(MA.column(cue.children[3], tag), { 'c1', 'c2' }, 'new part')
-	check(cue.children[3].part == 2, 'new part should be part 2, is ' .. tostring(cue.children[3].part))
+	same(MA.column(cue.children[1], tag), {}, 'part 0 ends up empty')
+	same(MA.column(cue.children[2], tag), { 'other-part' }, 'existing part 1 (no preset) stays')
+	same(MA.column(cue.children[3], tag), { 'd' }, 'new part for pool 1')
+	same(MA.column(cue.children[4], tag), { 'c1', 'c2' }, 'new part for pool 4')
+	check(cue.children[3].part == 2 and cue.children[4].part == 3, 'new parts should be 2 and 3')
 end)
 
 test('split + separators: each part ends with a separator', function()
@@ -405,8 +453,9 @@ test('split + separators: each part ends with a separator', function()
 	MA.answer('1', '', 'group', { splitGroups = true, separators = true })
 	runPlugin()
 	local cue = MA.cue(seq, 1)
-	same(MA.column(cue.children[1], tag), { 'g1', '#' }, 'part 0')
-	same(MA.column(cue.children[2], tag), { 'g2', '#' }, 'part 1')
+	same(MA.column(cue.children[1], tag), {}, 'part 0')
+	same(MA.column(cue.children[2], tag), { 'g1', '#' }, 'part 1')
+	same(MA.column(cue.children[3], tag), { 'g2', '#' }, 'part 2')
 end)
 
 test('both split options: error and the dialog re-opens', function()
